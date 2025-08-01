@@ -1,0 +1,86 @@
+[build]
+  publish = "public"
+  command = """
+    # Warna output
+    GREEN='\\033[0;32m'
+    YELLOW='\\033[1;33m'
+    RED='\\033[0;31m'
+    CYAN='\\033[0;36m'
+    NC='\\033[0m' # no color
+
+    echo -e "${CYAN}🚀 Starting Hugo build...${NC}"
+    if hugo; then
+      echo -e "${GREEN}✅ Hugo build completed.${NC}"
+
+      SITEMAP_PATH="public/sitemap.xml"
+      TODAY=$(date -u +"%Y-%m-%d")
+
+      if [ ! -f "$SITEMAP_PATH" ]; then
+        echo -e "${RED}❌ sitemap.xml tidak ditemukan, skip IndexNow.${NC}"
+        exit 0
+      fi
+
+      echo -e "${CYAN}📄 Parsing sitemap.xml (filter kategori/tag/post/homepage)...${NC}"
+      URLS_SORTED=$(grep -E '<loc>|<lastmod>' "$SITEMAP_PATH" \
+        | sed -e 's/<loc>//;s|</loc>||;s/<lastmod>//;s|</lastmod>||' \
+        | paste - - | sort -rk2 \
+        | grep -vE '/tags/|/categories/|/post/|/page/$|https://akazed.com/$')
+
+      # Ambil URL yang diupdate hari ini
+      URLS_TODAY=$(echo "$URLS_SORTED" | grep "$TODAY" | awk '{print $1}')
+
+      if [ -n "$URLS_TODAY" ]; then
+        echo -e "${GREEN}📅 Ditemukan $(echo "$URLS_TODAY" | wc -l) artikel baru hari ini.${NC}"
+        URLS_TO_SEND="$URLS_TODAY"
+      else
+        echo -e "${YELLOW}ℹ️ Tidak ada artikel baru hari ini, skip pengiriman.${NC}"
+        exit 0
+      fi
+
+      echo "$URLS_TO_SEND" > /tmp/latest_urls.txt
+      echo -e "${CYAN}🔍 URLs to send:${NC}"
+      cat /tmp/latest_urls.txt
+
+      # Buat array JSON
+      URL_JSON_ARRAY=$(printf '"%s",' $URLS_TO_SEND)
+      URL_JSON_ARRAY=${URL_JSON_ARRAY%,}
+
+      # Payload JSON
+      JSON_PAYLOAD=$(cat <<EOF
+{
+  "host": "akazed.com",
+  "key": "${INDEXNOW_KEY}",
+  "keyLocation": "https://akazed.com/${INDEXNOW_KEY_FILENAME}",
+  "urlList": [$URL_JSON_ARRAY]
+}
+EOF
+)
+
+      echo -e "${CYAN}📦 JSON payload yang akan dikirim:${NC}"
+      echo "$JSON_PAYLOAD"
+
+      echo -e "${CYAN}📤 Sending URL list to IndexNow...${NC}"
+      RESPONSE=$(curl -s -o /tmp/indexnow_response.txt -w "%{http_code}" \
+        -X POST https://api.indexnow.org/indexnow \
+        -H 'Content-Type: application/json' \
+        -d "$JSON_PAYLOAD")
+
+      # Cek status
+      if [ "$RESPONSE" -eq 202 ]; then
+        echo -e "${GREEN}📡 IndexNow HTTP Status: $RESPONSE (Success)${NC}"
+      elif [ "$RESPONSE" -eq 200 ]; then
+        echo -e "${YELLOW}📡 IndexNow HTTP Status: $RESPONSE (Likely Success - body check below)${NC}"
+      else
+        echo -e "${RED}📡 IndexNow HTTP Status: $RESPONSE (Failed)${NC}"
+      fi
+
+      echo -e "${CYAN}📝 Response body:${NC}"
+      cat /tmp/indexnow_response.txt
+
+    else
+      echo -e "${RED}❌ Hugo build failed, skipping IndexNow ping.${NC}"
+    fi
+  """
+
+[context.production.environment]
+  HUGO_VERSION = "0.123.1"
